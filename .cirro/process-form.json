@@ -1,0 +1,18 @@
+{
+  "form": {
+    "title": "Mutect2 (GATK)",
+    "type": "object",
+    "properties": {
+      "gatk_docker": {
+        "title": "gatk docker",
+        "description": " Docker image to use for Mutect2 tasks. This is only used for backends configured to use docker.",
+        "type": "string",
+        "default":"broadinstitute/gatk:4.2.4.0"
+      }
+    },
+    "required": [
+        "gatk_docker"
+    ]
+  },
+  "ui": {}
+}
