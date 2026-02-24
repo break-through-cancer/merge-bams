@@ -24,20 +24,20 @@ process MERGE_ALL_BAMS {
     path "merged.bam.bai"
 
   script:
-  """
-  set -euo pipefail
+    def inputFlags = bams.collect { "-I ${it}" }.join(' ')
+    """
+    set -euo pipefail
+    echo "=== MERGE_ALL_BAMS ==="
+    echo "BAMs:"
+    printf '%s\\n' ${bams.collect{ "\"${it}\"" }.join(' ')}
 
-  echo "=== MERGE_ALL_BAMS ==="
-  echo "Inputs:"
-  ls -lah
+    gatk MergeSamFiles \
+        ${inputFlags} \
+        -O merged.bam \
+        --CREATE_INDEX true
 
-  gatk MergeSamFiles \\
-    $(for b in ${bams}; do echo -n " -I \$b"; done) \\
-    -O merged.bam \\
-    --CREATE_INDEX true
-
-  ls -lah merged.bam merged.bam.bai
-  """
+    ls -lah merged.bam merged.bam.bai
+    """
 }
 
 workflow {
