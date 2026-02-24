@@ -1,0 +1,10 @@
+{
+    "read_from_cache": true,
+    "write_to_cache": true,
+    "outdir": "$.params.dataset.s3|/data/",
+    "gatk_docker": "$.dataset.params.gatk_docker",
+    "minimum_allele_frequency": "0.0",
+    "mem_gb": "128",
+    "disk_space_gb": "16384",
+    "boot_disk_size_gb": "100"
+}
