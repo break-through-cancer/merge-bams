@@ -27,18 +27,31 @@ process MERGE_ALL_BAMS {
     def inputFlags = bams.collect { "-I ${it}" }.join(' ')
     """
     set -euo pipefail
-    echo "=== MERGE_ALL_BAMS ==="
-    echo "BAMs:"
-    printf '%s\\n' ${bams.collect{ "\"${it}\"" }.join(' ')}
 
     gatk MergeSamFiles \
-        ${inputFlags} \
-        -O merged.bam \
-        --CREATE_INDEX true
+      ${inputFlags} \
+      -O merged.bam \
+      --CREATE_INDEX true
+
+    # GATK/Picard may output merged.bai (not merged.bam.bai)
+    if [[ -f merged.bai && ! -f merged.bam.bai ]]; then
+      mv merged.bai merged.bam.bai
+    fi
+
+    # If still missing, try to create one (if samtools exists in image)
+    if [[ ! -f merged.bam.bai ]]; then
+      if command -v samtools >/dev/null 2>&1; then
+        samtools index -o merged.bam.bai merged.bam
+      fi
+    fi
+
+    # Hard fail if index truly not produced
+    test -f merged.bam.bai
 
     ls -lah merged.bam merged.bam.bai
     """
 }
+
 
 workflow {
   Channel
