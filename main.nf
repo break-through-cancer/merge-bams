@@ -68,20 +68,25 @@ import java.security.MessageDigest
 //   MERGE_ALL_BAMS(all_bams_ch)
 // }
 
+/*
+------------------------------------------------------------
+Create ONE unified sample name (SM)
+------------------------------------------------------------
+Mutect2 requires exactly ONE SM.
+We derive it from all BAM names.
+*/
+#!/usr/bin/env nextflow
 
 /*
-Read-group defaults
-RGPL = sequencing platform
-RGLB = library name
+------------------------------------------------------------
+Parameters + defaults
+------------------------------------------------------------
 */
-params.rgpl        = params.rgpl ?: "ILLUMINA"
-params.rglb        = params.rglb ?: "lib1"
-
-/*
-Maximum allowed SM length before hashing
-(Some tools break with extremely long SMs)
-*/
-params.max_sm_len  = params.max_sm_len ?: 200
+params.outdir      = params.outdir      ?: "results"
+params.gatk_docker = params.gatk_docker ?: "broadinstitute/gatk:4.5.0.0"
+params.rgpl        = params.rgpl        ?: "ILLUMINA"
+params.rglb        = params.rglb        ?: "lib1"
+params.max_sm_len  = params.max_sm_len  ?: 200   // keep SM reasonably sized
 
 
 /*
@@ -131,7 +136,7 @@ def smParts = bamList.collect { p ->
 def smJoined = smParts.join('__')
 
 def unifiedSM =
-    (smJoined.size() <= params.max_sm_len)
+    (smJoined.size() <= (params.max_sm_len as int))
         ? smJoined
         : "MERGED_${smParts.size()}_${md5(smJoined).substring(0,12)}"
 
@@ -145,8 +150,8 @@ PROCESS 1 — FIX_READGROUPS
 ============================================================
 
 Why this exists:
-
- ONE SM,  UNIQUE RGID,  RGPU
+- Force ONE SM across all @RG lines
+- Ensure UNIQUE RGID and RGPU per input BAM (avoid header collisions)
 */
 process FIX_READGROUPS {
 
@@ -190,13 +195,14 @@ process FIX_READGROUPS {
 
     # guarantee index exists
     if [[ ! -f fixed.${idx}.bam.bai ]]; then
-        gatk BuildBamIndex \
-            -I fixed.${idx}.bam \
+        gatk BuildBamIndex \\
+            -I fixed.${idx}.bam \\
             -O fixed.${idx}.bam.bai
     fi
+
+    test -f fixed.${idx}.bam.bai
     """
 }
-
 
 
 /*
@@ -246,15 +252,15 @@ EOF
     fi
 
     if [[ ! -f merged.bam.bai ]]; then
-        gatk BuildBamIndex \
-            -I merged.bam \
+        gatk BuildBamIndex \\
+            -I merged.bam \\
             -O merged.bam.bai
     fi
 
     test -f merged.bam.bai
+    ls -lah merged.bam merged.bam.bai merged.sm_manifest.txt
     """
 }
-
 
 
 /*
@@ -265,16 +271,16 @@ WORKFLOW
 workflow {
 
     /*
-    enumerate() replaces withIndex()
-    (Cirro-safe)
+    Cirro Nextflow build does NOT support withIndex() or enumerate().
+    So we create (bam, idx) tuples in plain Groovy and then make a channel.
     */
-    Channel
-        .fromList(bamList)
-        .map { file(it) }
-        .enumerate()
-        .map { idx, bam -> tuple(bam, idx) }
-        .set { bam_idx_ch }
+    def bam_idx_list = (0..<bamList.size()).collect { idx ->
+        tuple( file(bamList[idx]), idx )
+    }
 
+    Channel
+        .fromList(bam_idx_list)
+        .set { bam_idx_ch }
 
     /*
     Step 1: normalize read groups
@@ -286,15 +292,12 @@ workflow {
         params.rglb
     )
 
-
     /*
-    Step 2: collect fixed BAMs
+    Step 2: collect fixed BAMs for merge
     */
-    FIX_READGROUPS.out.fixed
+    def fixed_bams_ch = FIX_READGROUPS.out.fixed
         .map { fixed_bam, fixed_bai, idx -> fixed_bam }
         .collect()
-        .set { fixed_bams_ch }
-
 
     /*
     Step 3: merge
