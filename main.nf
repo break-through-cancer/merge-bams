@@ -1,3 +1,8 @@
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+import java.security.MessageDigest
+
 // #!/usr/bin/env nextflow
 // nextflow.enable.dsl = 2
 
@@ -63,10 +68,7 @@
 //   MERGE_ALL_BAMS(all_bams_ch)
 // }
 
-#!/usr/bin/env nextflow
-nextflow.enable.dsl = 2
 
-import java.security.MessageDigest
 
 params.outdir      = params.outdir      ?: "results"
 params.gatk_docker = params.gatk_docker ?: "broadinstitute/gatk:4.5.0.0"
