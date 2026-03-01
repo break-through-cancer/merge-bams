@@ -75,8 +75,6 @@ Create ONE unified sample name (SM)
 Mutect2 requires exactly ONE SM.
 We derive it from all BAM names.
 */
-#!/usr/bin/env nextflow
-
 /*
 ------------------------------------------------------------
 Parameters + defaults
