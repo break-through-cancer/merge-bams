@@ -1,80 +1,8 @@
-#!/usr/bin/env nextflow
+// #!/usr/bin/env nextflow
 nextflow.enable.dsl = 2
 
 import java.security.MessageDigest
 
-// #!/usr/bin/env nextflow
-// nextflow.enable.dsl = 2
-
-// params.outdir      = params.outdir      ?: "results"
-// params.gatk_docker = params.gatk_docker ?: "broadinstitute/gatk:4.5.0.0"
-
-
-// def bamList = params.bams
-
-// if( !bamList || bamList.isEmpty() ) {
-//   error "Missing required --bams"
-// }
-
-// process MERGE_ALL_BAMS {
-//   tag "merge_all"
-//   container "${params.gatk_docker}"
-//   publishDir "${params.outdir}", mode: 'copy'
-
-//   input:
-//     path bams
-
-//   output:
-//     path "merged.bam"
-//     path "merged.bam.bai"
-
-//   script:
-//     def inputFlags = bams.collect { "-I ${it}" }.join(' ')
-//     """
-//     set -euo pipefail
-
-//     gatk MergeSamFiles \
-//       ${inputFlags} \
-//       -O merged.bam \
-//       --CREATE_INDEX true
-
-//     # GATK/Picard may output merged.bai (not merged.bam.bai)
-//     if [[ -f merged.bai && ! -f merged.bam.bai ]]; then
-//       mv merged.bai merged.bam.bai
-//     fi
-
-//     # If still missing, try to create one (if samtools exists in image)
-//     if [[ ! -f merged.bam.bai ]]; then
-//       if command -v samtools >/dev/null 2>&1; then
-//         samtools index -o merged.bam.bai merged.bam
-//       fi
-//     fi
-
-//     # Hard fail if index truly not produced
-//     test -f merged.bam.bai
-
-//     ls -lah merged.bam merged.bam.bai
-//     """
-// }
-
-
-// workflow {
-//   Channel
-//     .fromList(bamList)
-//     .map { file(it) }
-//     .collect()
-//     .set { all_bams_ch }
-
-//   MERGE_ALL_BAMS(all_bams_ch)
-// }
-
-/*
-------------------------------------------------------------
-Create ONE unified sample name (SM)
-------------------------------------------------------------
-Mutect2 requires exactly ONE SM.
-We derive it from all BAM names.
-*/
 /*
 ------------------------------------------------------------
 Parameters + defaults
@@ -82,9 +10,7 @@ Parameters + defaults
 */
 params.outdir      = params.outdir      ?: "results"
 params.gatk_docker = params.gatk_docker ?: "broadinstitute/gatk:4.5.0.0"
-params.rgpl        = params.rgpl        ?: "ILLUMINA"
-params.rglb        = params.rglb        ?: "lib1"
-params.max_sm_len  = params.max_sm_len  ?: 200   // keep SM reasonably sized
+params.max_sm_len  = params.max_sm_len  ?: 200
 
 
 /*
@@ -105,7 +31,6 @@ if( !(bamList instanceof List) )
 /*
 ------------------------------------------------------------
 Helper: MD5 hash generator
-Used only if merged sample name becomes too long
 ------------------------------------------------------------
 */
 String md5(String s) {
@@ -121,8 +46,9 @@ String md5(String s) {
 ------------------------------------------------------------
 Create ONE unified sample name (SM)
 ------------------------------------------------------------
-Mutect2 requires exactly ONE SM.
+Mutect2 wants one sample identity in the merged BAM header.
 We derive it from all BAM names.
+------------------------------------------------------------
 */
 def smParts = bamList.collect { p ->
     def n = new File(p.toString()).getName()
@@ -144,72 +70,17 @@ println "Unified SM = ${unifiedSM}"
 
 /*
 ============================================================
-PROCESS 1 — FIX_READGROUPS
+PROCESS — MERGE_ALL_BAMS_AND_FIX_SM_HEADER
 ============================================================
-
-Why this exists:
-- Force ONE SM across all @RG lines
-- Ensure UNIQUE RGID and RGPU per input BAM (avoid header collisions)
+What this does:
+- Merge BAMs with MergeSamFiles
+- Keep existing read groups / RGIDs
+- Rewrite ONLY the SM tag in each @RG header line
+- Reheader merged BAM
+- Reindex final BAM
+============================================================
 */
-process FIX_READGROUPS {
-
-    tag { "fix_rg_${idx}" }
-    container "${params.gatk_docker}"
-
-    input:
-        tuple path(bam), val(idx)
-        val unified_sm
-        val rgpl
-        val rglb
-
-    output:
-        tuple path("fixed.${idx}.bam"),
-              path("fixed.${idx}.bam.bai"),
-              val(idx),
-              emit: fixed
-
-    script:
-    """
-    set -euo pipefail
-
-    # Unique identifiers per BAM
-    RGID="rg${idx}"
-    RGPU="pu${idx}"
-
-    gatk AddOrReplaceReadGroups \\
-        -I "${bam}" \\
-        -O "fixed.${idx}.bam" \\
-        -RGID "\$RGID" \\
-        -RGLB "${rglb}" \\
-        -RGPL "${rgpl}" \\
-        -RGPU "\$RGPU" \\
-        -RGSM "${unified_sm}" \\
-        --CREATE_INDEX true
-
-    # normalize index naming
-    if [[ -f fixed.${idx}.bai && ! -f fixed.${idx}.bam.bai ]]; then
-        mv fixed.${idx}.bai fixed.${idx}.bam.bai
-    fi
-
-    # guarantee index exists
-    if [[ ! -f fixed.${idx}.bam.bai ]]; then
-        gatk BuildBamIndex \\
-            -I fixed.${idx}.bam \\
-            -O fixed.${idx}.bam.bai
-    fi
-
-    test -f fixed.${idx}.bam.bai
-    """
-}
-
-
-/*
-============================================================
-PROCESS 2 — MERGE_ALL_BAMS
-============================================================
-Merge already-normalized BAMs safely
-*/
-process MERGE_ALL_BAMS {
+process MERGE_ALL_BAMS_AND_FIX_SM_HEADER {
 
     tag "merge_all"
     container "${params.gatk_docker}"
@@ -232,31 +103,82 @@ process MERGE_ALL_BAMS {
     """
     set -euo pipefail
 
-    # record provenance
+    # provenance
     cat > merged.sm_manifest.txt << EOF
 unified_SM=${unified_sm}
 inputs:
 ${manifestText}
 EOF
 
+    echo "=== MERGING BAMs ==="
     gatk MergeSamFiles \\
         ${inputFlags} \\
-        -O merged.bam \\
-        --CREATE_INDEX true
+        -O merged.preheader.bam
 
-    # normalize index naming
-    if [[ -f merged.bai && ! -f merged.bam.bai ]]; then
-        mv merged.bai merged.bam.bai
+    echo "=== EXTRACT ORIGINAL HEADER ==="
+    samtools view -H merged.preheader.bam > merged.header.sam
+
+    echo "=== REWRITE ONLY SM ON @RG LINES ==="
+    awk -v SM="${unified_sm}" 'BEGIN{FS=OFS="\\t"}
+        /^@RG/ {
+            found=0
+            for (i=1; i<=NF; i++) {
+                if (\$i ~ /^SM:/) {
+                    \$i = "SM:" SM
+                    found=1
+                }
+            }
+            if (!found) {
+                \$0 = \$0 OFS "SM:" SM
+            }
+            print
+            next
+        }
+        { print }
+    ' merged.header.sam > merged.header.smfixed.sam
+
+    echo "=== VALIDATE HEADER SM VALUES ==="
+    grep '^@RG' merged.header.smfixed.sam > rg_lines.txt || true
+
+    if [[ ! -s rg_lines.txt ]]; then
+        echo "ERROR: merged BAM header has no @RG lines; cannot define SM for Mutect2." >&2
+        exit 1
     fi
 
-    if [[ ! -f merged.bam.bai ]]; then
-        gatk BuildBamIndex \\
-            -I merged.bam \\
-            -O merged.bam.bai
+    awk 'BEGIN{FS="\\t"}
+        /^@RG/ {
+            for (i=1; i<=NF; i++) {
+                if (\$i ~ /^SM:/) {
+                    sub(/^SM:/, "", \$i)
+                    print \$i
+                }
+            }
+        }
+    ' merged.header.smfixed.sam | sort -u > sm_values.txt
+
+    echo "SM values after rewrite:"
+    cat sm_values.txt
+
+    if [[ \$(wc -l < sm_values.txt) -ne 1 ]]; then
+        echo "ERROR: expected exactly one SM after header rewrite" >&2
+        exit 1
     fi
 
+    if [[ "\$(cat sm_values.txt)" != "${unified_sm}" ]]; then
+        echo "ERROR: final SM does not match expected unified SM" >&2
+        exit 1
+    fi
+
+    echo "=== REHEADER MERGED BAM ==="
+    samtools reheader -o merged.bam merged.header.smfixed.sam merged.preheader.bam
+
+    echo "=== INDEX FINAL BAM ==="
+    samtools index -o merged.bam.bai merged.bam
+
+    test -f merged.bam
     test -f merged.bam.bai
-    ls -lah merged.bam merged.bam.bai merged.sm_manifest.txt
+
+    ls -lah merged.preheader.bam merged.bam merged.bam.bai merged.sm_manifest.txt
     """
 }
 
@@ -268,43 +190,16 @@ WORKFLOW
 */
 workflow {
 
-    /*
-    Cirro Nextflow build does NOT support withIndex() or enumerate().
-    So we create (bam, idx) tuples in plain Groovy and then make a channel.
-    */
-    def bam_idx_list = (0..<bamList.size()).collect { idx ->
-        tuple( file(bamList[idx]), idx )
-    }
-
     Channel
-        .fromList(bam_idx_list)
-        .set { bam_idx_ch }
-
-    /*
-    Step 1: normalize read groups
-    */
-    FIX_READGROUPS(
-        bam_idx_ch,
-        unifiedSM,
-        params.rgpl,
-        params.rglb
-    )
-
-    /*
-    Step 2: collect fixed BAMs for merge
-    */
-    def fixed_bams_ch = FIX_READGROUPS.out.fixed
-        .map { fixed_bam, fixed_bai, idx -> fixed_bam }
+        .fromList(bamList)
+        .map { file(it) }
         .collect()
+        .set { all_bams_ch }
 
-    /*
-    Step 3: merge
-    */
-    def manifest_lines =
-        bamList.collect { "  - ${it}" }
+    def manifest_lines = bamList.collect { "  - ${it}" }
 
-    MERGE_ALL_BAMS(
-        fixed_bams_ch,
+    MERGE_ALL_BAMS_AND_FIX_SM_HEADER(
+        all_bams_ch,
         unifiedSM,
         manifest_lines
     )
